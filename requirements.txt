@@ -1,0 +1,14 @@
+# GHOST System dependencies
+
+# Layer 2 (Signal Processing)
+numpy
+scipy
+pyserial
+pandas
+matplotlib
+
+# Layer 3 (Cognitive — Memory Bank)
+chromadb
+
+# Layer 3 (Cognitive — Agentic Core)
+ollama

@@ -1,0 +1,32 @@
+menu "GHOST v2 Injection Firmware"
+
+    config GHOST_WIFI_SSID
+        string "WiFi SSID"
+        default "ghost_ap"
+        help
+            SSID of the network the ESP32 joins. This is either your router or a
+            SoftAP hosted on the machine running the injector. The ESP32 is a
+            station in both cases.
+
+    config GHOST_WIFI_PASSWORD
+        string "WiFi Password"
+        default "ghost1234"
+        help
+            Password for the WiFi network above.
+
+    config GHOST_UDP_PORT
+        int "UDP injection port"
+        default 5005
+        help
+            UDP port this node listens on for injection frames. Must match the
+            injector's target port (config_v2.UDP_PORT).
+
+    config GHOST_NODE_ID
+        int "Node ID (1=RX1, 2=RX2, 3=RX3)"
+        default 1
+        range 1 3
+        help
+            Which receiver this board represents. Flash each of the three boards
+            with a distinct value. Frames whose node_id differs are ignored.
+
+endmenu

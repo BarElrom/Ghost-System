@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+
+# IDE
+.idea/
+
+# Data files
+*.csv
+
+# macOS
+.DS_Store
+
+# ESP-IDF build artifacts (generated; ~270 MB — never commit)
+build/
+sdkconfig.old
+managed_components/
+
+# Claude Code local settings
+.claude/settings.local.json

@@ -1,0 +1,33 @@
+services:
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: ghost-chromadb
+    ports:
+      - "8000:8000"
+    volumes:
+      - ghost_chroma_data:/chroma/chroma
+    environment:
+      - IS_PERSISTENT=TRUE
+      - ANONYMIZED_TELEMETRY=FALSE
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ghost-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ghost_ollama_data:/root/.ollama
+    restart: unless-stopped
+    # Uncomment for NVIDIA GPU on Linux:
+    # deploy:
+    #   resources:
+    #     reservations:
+    #       devices:
+    #         - driver: nvidia
+    #           count: all
+    #           capabilities: [gpu]
+
+volumes:
+  ghost_chroma_data:
+  ghost_ollama_data:
