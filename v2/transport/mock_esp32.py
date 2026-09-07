@@ -1,91 +1,18 @@
-"""
-v2 transport — software mock of the ESP32 loopback firmware.
-
-Stands in for the real `csi_inject_recv` firmware (Plan section 4) so the whole
-transport contract can be validated before flashing hardware. Its job mirrors
-the firmware exactly:
-
-    UDP frame (over the wire)  ->  decode  ->  emit a CSI_DATA serial line
-
-The emitted line matches the standard ESP32 `csi_recv` CSV format, so the
-existing ghost gateway / CSIParser can consume it unchanged. Only id, timestamp
-and the I/Q array are faithful; all other metadata fields are constant fillers.
-
-Run as a standalone listener (prints CSI_DATA lines it receives):
-
-    python -m v2.transport.mock_esp32
-"""
 
 import logging
 import socket
 import threading
 
-import numpy as np
-
-from v2.config_v2 import (
-    DEFAULT_NOISE_FLOOR,
-    DEFAULT_RSSI,
-    NODE_ID_TO_NAME,
-    SAMPLE_RATE_HZ,
-    TX_MAC,
-    UDP_PORT,
-    WIFI_CHANNEL,
-)
-from v2.transport.frame import Frame, decode_frame
+from v2.config_v2 import NODE_ID_TO_NAME, UDP_PORT
+from v2.transport.frame import Frame, decode_frame, frame_to_csi_line
 
 logger = logging.getLogger("ghost.v2.mock_esp32")
 
-# Microseconds per frame at the configured rate (deterministic timestamp).
-_US_PER_FRAME = 1_000_000 // SAMPLE_RATE_HZ
-
-
-def frame_to_csi_line(frame: Frame) -> str:
-    """Format a decoded frame as a standard ESP32 CSI_DATA CSV line.
-
-    Column layout (indices 0-24) matches esp-csi `csi_recv` output:
-        type,id,mac,rssi,rate,sig_mode,mcs,bandwidth,smoothing,not_sounding,
-        aggregation,stbc,fec_coding,sgi,noise_floor,ampdu_cnt,channel,
-        secondary_channel,local_timestamp,ant,sig_len,rx_format,len,first_word,
-        "[I0,Q0,...,I63,Q63]"
-    """
-    i = np.clip(np.rint(frame.iq.real), -32768, 32767).astype(np.int16)
-    q = np.clip(np.rint(frame.iq.imag), -32768, 32767).astype(np.int16)
-
-    interleaved = np.empty(frame.num_sub * 2, dtype=np.int16)
-    interleaved[0::2] = i
-    interleaved[1::2] = q
-    csi_array = "[" + ",".join(str(int(v)) for v in interleaved) + "]"
-
-    n_vals = frame.num_sub * 2
-    timestamp = frame.frame_seq * _US_PER_FRAME
-
-    fields = [
-        "CSI_DATA",          # 0  type
-        str(frame.frame_seq),  # 1  id (sequence)
-        TX_MAC,              # 2  mac
-        str(DEFAULT_RSSI),   # 3  rssi
-        "11",                # 4  rate
-        "1",                 # 5  sig_mode
-        "7",                 # 6  mcs
-        "1",                 # 7  bandwidth (40 MHz)
-        "0",                 # 8  smoothing
-        "1",                 # 9  not_sounding
-        "0",                 # 10 aggregation
-        "0",                 # 11 stbc
-        "0",                 # 12 fec_coding
-        "0",                 # 13 sgi
-        str(DEFAULT_NOISE_FLOOR),  # 14 noise_floor
-        "0",                 # 15 ampdu_cnt
-        str(WIFI_CHANNEL),   # 16 channel
-        "0",                 # 17 secondary_channel
-        str(timestamp),      # 18 local_timestamp
-        "0",                 # 19 ant
-        str(n_vals),         # 20 sig_len
-        "1",                 # 21 rx_format
-        str(n_vals),         # 22 len
-        "0",                 # 23 first_word
-    ]
-    return ",".join(fields) + ',"' + csi_array + '"'
+# ``frame_to_csi_line`` now lives in the codec module (transport/frame.py) — it is
+# the inverse of CSIParser.parse and is shared by the hardware binary source too.
+# Re-exported here so existing ``from v2.transport.mock_esp32 import
+# frame_to_csi_line`` imports keep working.
+__all__ = ["MockESP32", "frame_to_csi_line"]
 
 
 class MockESP32:

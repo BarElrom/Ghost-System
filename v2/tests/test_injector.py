@@ -14,7 +14,7 @@ import sys
 import tempfile
 import time
 
-from _harness import Harness  # noqa: E402  (path bootstrap happens in _harness)
+from _harness import Harness
 
 import numpy as np
 
@@ -54,7 +54,6 @@ def _recv_n(mock: MockESP32, n: int, timeout: float = 2.0):
     return by_node
 
 
-# --- adapter ---------------------------------------------------------------
 def test_embedded_wifi_adapter_parse(h: Harness) -> None:
     i = np.arange(64, dtype=np.float32) - 5.0
     q = (np.arange(64, dtype=np.float32) + 2.0)
@@ -64,7 +63,7 @@ def test_embedded_wifi_adapter_parse(h: Harness) -> None:
     path = tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False).name
     try:
         with open(path, "w") as f:
-            f.write("header,line,with,no,brackets\n")  # should be skipped
+            f.write("header,line,with,no,brackets\n")
             f.write(line + "\n")
             f.write(line + "\n")
         snaps = list(EmbeddedWiFiAdapter(path, iq_order="iq").snapshots())
@@ -78,9 +77,7 @@ def test_embedded_wifi_adapter_parse(h: Harness) -> None:
 
 
 def test_embedded_wifi_normalization(h: Harness) -> None:
-    # 128 pairs -> truncated to 64
     long_nums = ",".join(str(v) for v in range(256))
-    # 40 pairs -> interpolated up to 64
     short_nums = ",".join(str(v) for v in range(80))
     path = tempfile.NamedTemporaryFile(mode="w", suffix=".csv", delete=False).name
     try:
@@ -91,13 +88,11 @@ def test_embedded_wifi_normalization(h: Harness) -> None:
         h.expect("both lines parsed", len(snaps) == 2)
         h.expect("long line normalized to 64", snaps[0].iq_by_stream[0].shape == (64,))
         h.expect("short line normalized to 64", snaps[1].iq_by_stream[0].shape == (64,))
-        # first pair of long line is (0,1) -> I0=0, Q0=1
         h.expect("truncation keeps head", snaps[0].iq_by_stream[0][0] == (0 + 1j))
     finally:
         os.unlink(path)
 
 
-# --- injector preamble + fan-out (raw off the wire) ------------------------
 def test_injector_preamble_and_operational(h: Harness) -> None:
     mock = MockESP32(bind_host="127.0.0.1", bind_port=0)
     try:
@@ -111,7 +106,6 @@ def test_injector_preamble_and_operational(h: Harness) -> None:
         inj.run()
         inj.close()
 
-        # 2 calib + 2 operational, times 3 nodes = 12 frames
         by_node = _recv_n(mock, 12)
         h.expect("all 3 nodes received", set(by_node) == {"RX1", "RX2", "RX3"}, str(set(by_node)))
         h.expect("4 frames per node", all(len(v) == 4 for v in by_node.values()))
@@ -120,7 +114,6 @@ def test_injector_preamble_and_operational(h: Harness) -> None:
         if len(rx1) == 4:
             flags = [fr.calibration for fr in rx1]
             h.expect("calib flags = [T,T,F,F]", flags == [True, True, False, False], str(flags))
-            # RX1 gain == 1, so values are exact
             h.expect("calib value == baseline B", np.allclose(rx1[0].iq.real, 500) and np.allclose(rx1[0].iq.imag, 100))
             h.expect("last operational == M", np.allclose(rx1[3].iq.real, 1000) and np.allclose(rx1[3].iq.imag, 300))
         h.expect("single-link marked synthesized", inj.synthesized_nodes is True)
@@ -142,8 +135,7 @@ def test_injector_direct_map_three_streams(h: Harness) -> None:
         inj.run()
         inj.close()
 
-        by_node = _recv_n(mock, 6)  # 1 calib + 1 op, times 3
-        # operational frame (seq 1) carries each stream's own value, no gain
+        by_node = _recv_n(mock, 6)
         ok = (
             np.allclose(by_node["RX1"][1].iq.real, 10)
             and np.allclose(by_node["RX2"][1].iq.real, 20)
@@ -154,7 +146,6 @@ def test_injector_direct_map_three_streams(h: Harness) -> None:
         mock.close()
 
 
-# --- full injector -> gateway_v2 -------------------------------------------
 def test_injector_to_gateway_v2(h: Harness) -> None:
     udp = UDPSource(bind_host="127.0.0.1", bind_port=0)
     gw = GatewayV2(sources=[udp])
@@ -170,7 +161,6 @@ def test_injector_to_gateway_v2(h: Harness) -> None:
         inj.run()
         inj.close()
 
-        # 2 calib + 2 operational = 4 frames per receiver (wait for all 3 nodes)
         m = gw.get_matrix()
         arrived = _wait_until(
             lambda: all(m.get_receiver_count(rx) >= 4 for rx in range(3)), timeout=3.0
@@ -178,11 +168,9 @@ def test_injector_to_gateway_v2(h: Harness) -> None:
         h.expect("frames reached all gateway receivers", arrived,
                  f"counts={[m.get_receiver_count(r) for r in range(3)]}")
 
-        latest = gw.get_matrix().get_latest(1)  # last operational frame = M * gain
-        # RX1 (index 0), gain == 1 -> exact M
+        latest = gw.get_matrix().get_latest(1)
         h.expect("RX1 last real == 1000", np.isclose(latest[0, 0, 0].real, 1000, atol=1.0))
         h.expect("RX1 last imag == 300 (phase kept)", np.isclose(latest[0, 0, 0].imag, 300, atol=1.0))
-        # RX2 (index 1), synthesized gain
         exp = np.complex64(M) * _DEFAULT_GAINS["RX2"]
         h.expect("RX2 last matches M*gain", np.isclose(latest[1, 0, 0].real, exp.real, atol=1.5)
                  and np.isclose(latest[1, 0, 0].imag, exp.imag, atol=1.5))

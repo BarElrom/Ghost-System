@@ -16,7 +16,7 @@ import numpy as np
 class Snapshot:
     """One time step of CSI, keyed by receiver-stream index."""
 
-    iq_by_stream: dict          # {stream_index: complex64 (64,)}
+    iq_by_stream: dict
     label: str | None = None
 
 

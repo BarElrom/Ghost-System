@@ -1,21 +1,4 @@
-"""
-GHOST System v2 — Injector (Service 1)
 
-Replays a dataset into the ESP32 receivers over UDP (Plan sections 3.1, 11):
-
-  1. Load Snapshots from a dataset adapter.
-  2. Fan out to the three physical nodes:
-       - dataset with >= 3 streams -> map streams to RX1/2/3 directly
-       - single-link dataset      -> synthesize per-node diversity via a complex
-                                      gain (POSITION IS NON-METRIC — Plan 10.1)
-  3. Emit a calibration preamble: `calibration_samples` frames of the head mean
-     (empty-room baseline estimate), marked calibration=True.
-  4. Stream the recording as operational frames, paced at `rate_hz`.
-
-The ghost side calibrates temporally (first N frames), so the calibration flag
-is informational for the wire/firmware; the preamble guarantees those first
-frames are the static baseline.
-"""
 
 import logging
 import time
@@ -33,11 +16,8 @@ from v2.transport.udp_sender import UDPSender
 
 logger = logging.getLogger("ghost.v2.injector")
 
-# Node names ordered by id: RX1, RX2, RX3.
 _NODE_NAMES = sorted(NODE_IDS, key=NODE_IDS.get)
 
-# Synthesized per-node complex gains for single-link datasets (amplitude falloff
-# + small phase offset). Arbitrary but distinct so the three nodes differ.
 _DEFAULT_GAINS = {
     "RX1": complex(1.0, 0.0),
     "RX2": 0.9 * np.exp(1j * 0.10),
@@ -79,7 +59,6 @@ class Injector:
         self.synthesized_nodes = adapter.num_streams < NUM_RECEIVERS
         self.stats = {name: {"calibration": 0, "operational": 0} for name in _NODE_NAMES}
 
-    # ------------------------------------------------------------------
     def _split_to_nodes(self, snapshot) -> dict:
         """Turn one snapshot into {node_name: complex64 (64,)} for all three nodes.
 
@@ -99,10 +78,15 @@ class Injector:
         window = self.calib_window or min(self.calibration_samples, len(snapshots))
         window = max(1, min(window, len(snapshots)))
         head = [self._split_to_nodes(s) for s in snapshots[:window]]
-        return {
+        baseline = {
             name: np.mean([h[name] for h in head], axis=0).astype(np.complex64)
             for name in _NODE_NAMES
         }
+        if logger.isEnabledFor(logging.INFO):
+            for name in _NODE_NAMES:
+                logger.info("baseline %s: |H_static| mean=%.3f over %d head snapshots",
+                            name, float(np.abs(baseline[name]).mean()), window)
+        return baseline
 
     def _send_tick(self, seq: dict, iq_per_node: dict, is_calibration: bool) -> None:
         """Send one frame to each node and advance its sequence + stat counter."""
@@ -129,13 +113,19 @@ class Injector:
                 "diversity — POSITION OUTPUT IS NON-METRIC (Plan 10.1).",
                 self.adapter.name, self.adapter.num_streams, NUM_RECEIVERS,
             )
+            gains_str = ", ".join(f"{n}=|{abs(g):.2f}|∠{np.angle(g):+.2f}rad"
+                                  for n, g in self.gains.items())
+            logger.info("fan-out gains (single-link → 3 nodes): %s", gains_str)
+        else:
+            logger.info("fan-out: %d dataset streams mapped directly to RX1..RX%d (metric)",
+                        self.adapter.num_streams, NUM_RECEIVERS)
 
         baseline = self._baseline_per_node(snapshots)
         seq = {name: 0 for name in _NODE_NAMES}
 
-        for _ in range(self.calibration_samples):          # empty-room preamble
+        for _ in range(self.calibration_samples):
             self._send_tick(seq, baseline, is_calibration=True)
-        for snapshot in snapshots:                          # the recording
+        for snapshot in snapshots:
             self._send_tick(seq, self._split_to_nodes(snapshot), is_calibration=False)
 
         logger.info("Injection complete: %d calib + %d operational frames per node",
@@ -148,14 +138,17 @@ class Injector:
             self._sender.close()
 
 
-# ---------------------------------------------------------------------------
-# Adapter registry + CLI
-# ---------------------------------------------------------------------------
 def build_adapter(dataset: str, path: str, **kwargs) -> DatasetAdapter:
     """Instantiate the adapter for a dataset name."""
     from v2.injector.adapters.embedded_wifi import EmbeddedWiFiAdapter
+    from v2.injector.adapters.csi_bench import CSIBenchAdapter
+    from v2.injector.adapters.intel_resp import IntelRespAdapter
 
-    registry = {"embedded_wifi": EmbeddedWiFiAdapter}
+    registry = {
+        "embedded_wifi": EmbeddedWiFiAdapter,
+        "csi_bench": CSIBenchAdapter,
+        "intel_resp": IntelRespAdapter,
+    }
     if dataset not in registry:
         raise ValueError(f"unknown dataset {dataset!r}; known: {list(registry)}")
     return registry[dataset](path, **kwargs)

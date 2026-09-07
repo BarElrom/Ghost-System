@@ -1,0 +1,31 @@
+# Build context is the repo root; the Dockerfile only needs v2/. Keep the context
+# (and image) lean by excluding everything the image doesn't use.
+
+# Big / irrelevant top-level dirs
+.venv/
+.git/
+.idea/
+.claude/
+esp-csi/
+
+# Python + macOS cruft
+__pycache__/
+*.pyc
+*.pyo
+.DS_Store
+
+# ESP-IDF firmware build artifacts (huge, host/toolchain-specific, not needed in the image)
+v2/firmware/**/build/
+v2/firmware/**/managed_components/
+v2/firmware/**/.cache/
+v2/firmware/**/sdkconfig.old
+
+# Generated outputs
+slides/
+*.png
+ghost_v2_*.csv
+
+# Docker files themselves
+Dockerfile
+.dockerignore
+docker-compose.yml

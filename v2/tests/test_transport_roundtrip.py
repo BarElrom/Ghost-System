@@ -2,26 +2,24 @@
 
 Proves the full injection path in software, end to end:
 
-    UDPSender  --UDP-->  MockESP32  -->  CSI_DATA line  -->  root CSIParser
+    UDPSender  --UDP-->  MockESP32  -->  CSI_DATA line  -->  CSIParser
 
-The final stage feeds the mock's output through the EXISTING root
-gateway.CSIParser (unmodified), proving the emitted line is byte-compatible
-with what the ghost system already consumes.
+The final stage feeds the mock's output through the v2 gateway CSIParser,
+proving the emitted line is byte-compatible with what the pipeline consumes.
 
 Run:  python v2/tests/test_transport_roundtrip.py
 """
 
 import sys
 
-from _harness import Harness  # noqa: E402  (path bootstrap happens in _harness)
+from _harness import Harness
 
 import numpy as np
 
 from v2.transport.udp_sender import UDPSender
 from v2.transport.mock_esp32 import MockESP32, frame_to_csi_line
 
-# Existing root parser — imported read-only to prove format compatibility.
-from gateway import CSIParser
+from v2.ghost.gateway_v2 import CSIParser
 
 
 def _make_iq() -> np.ndarray:
@@ -31,9 +29,8 @@ def _make_iq() -> np.ndarray:
 
 
 def test_udp_roundtrip_and_parse(h: Harness) -> None:
-    mock = MockESP32(bind_host="127.0.0.1", bind_port=0)  # ephemeral port
+    mock = MockESP32(bind_host="127.0.0.1", bind_port=0)
     try:
-        # Point the sender at the mock's actual bound port.
         net_map = {"RX2": ("127.0.0.1", mock.port)}
         sender = UDPSender(net_map=net_map)
 
@@ -51,26 +48,25 @@ def test_udp_roundtrip_and_parse(h: Harness) -> None:
         h.expect("I preserved over UDP", np.array_equal(frame.iq.real, iq.real))
         h.expect("Q preserved over UDP", np.array_equal(frame.iq.imag, iq.imag))
 
-        # --- format as a CSI_DATA line and parse with the ROOT parser ---
         line = frame_to_csi_line(frame)
         h.expect("line starts with CSI_DATA", line.startswith("CSI_DATA,"))
 
         parser = CSIParser()
         pkt = parser.parse(line, receiver_index=1)
-        h.expect("root CSIParser accepts the line", pkt is not None)
+        h.expect("CSIParser accepts the line", pkt is not None)
         if pkt is None:
             return
 
         h.expect("parsed seq_id matches", pkt.seq_id == 42, str(pkt.seq_id))
         h.expect("parsed receiver_index respected", pkt.receiver_index == 1)
 
-        # raw_iq from the root parser must equal our injected I/Q (int16).
         exp_i = iq.real.astype(np.int16)
         exp_q = iq.imag.astype(np.int16)
-        h.expect("parsed I matches injected", np.array_equal(pkt.raw_iq[:, 0], exp_i))
-        h.expect("parsed Q matches injected", np.array_equal(pkt.raw_iq[:, 1], exp_q))
+        h.expect("parsed I matches injected",
+                 np.array_equal(pkt.csi.real.astype(np.int16), exp_i))
+        h.expect("parsed Q matches injected",
+                 np.array_equal(pkt.csi.imag.astype(np.int16), exp_q))
 
-        # amplitude the root parser computes must equal sqrt(I^2+Q^2).
         exp_amp = np.sqrt(iq.real ** 2 + iq.imag ** 2)
         h.expect(
             "parsed amplitude matches sqrt(I^2+Q^2)",
@@ -93,7 +89,6 @@ def test_calibration_frame_formats(h: Harness) -> None:
         node_name, frame, _ = got
         h.expect("calibration flag survives transport", frame.calibration is True)
         h.expect("calibration routed to RX1", node_name == "RX1")
-        # Still produces a parseable CSI_DATA line.
         pkt = CSIParser().parse(frame_to_csi_line(frame), receiver_index=0)
         h.expect("calibration line parses", pkt is not None)
         sender.close()

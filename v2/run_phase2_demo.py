@@ -23,28 +23,31 @@ import sys
 import threading
 import time
 
-# Repo root on path so `import v2...` works when run as a script.
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
 import numpy as np
 
+from v2.config_v2 import DEFAULT_DATASET_PATH
 from v2.ghost.gateway_v2 import GatewayV2
 from v2.ghost.sources import UDPSource
 from v2.ghost.signal_cleaner_v2 import SignalCleanerV2
 from v2.ghost.feature_extractor_v2 import FeatureExtractorV2
+from v2.ghost.main_v2 import add_log_flags, apply_log_flags
 from v2.injector.injector import Injector, build_adapter, _NODE_NAMES
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="GHOST v2 Phase 2 end-to-end demo")
-    ap.add_argument("--path", default="example_csi.csv", help="dataset file")
+    ap.add_argument("--path", default=DEFAULT_DATASET_PATH, help="dataset file")
     ap.add_argument("--dataset", default="embedded_wifi", help="adapter name")
     ap.add_argument("--max-frames", type=int, default=800, help="operational frames to replay")
     ap.add_argument("--calib", type=int, default=200, help="calibration preamble frames")
     ap.add_argument("--rate", type=float, default=0.0, help="pacing Hz (0 = fast)")
+    add_log_flags(ap)
     args = ap.parse_args()
+    apply_log_flags(args)
 
     if not os.path.exists(args.path):
         print(f"dataset not found: {args.path}")
@@ -72,7 +75,6 @@ def main() -> int:
     injection_thread.start()
     injection_thread.join()
 
-    # Wait for the gateway to finish draining (received count stops growing).
     previous, stable_ticks = -1, 0
     for _ in range(200):
         time.sleep(0.03)
@@ -84,7 +86,6 @@ def main() -> int:
 
     counts = [gw.get_matrix().get_receiver_count(r) for r in range(3)]
     total = min(counts)
-    # How many frames the injector actually sent per node (from its own stats).
     sent = inj.stats["RX1"]["calibration"] + inj.stats["RX1"]["operational"]
     print(f"\nFrames received per node: {counts}  (sent {sent})")
     expected = sent
@@ -95,8 +96,7 @@ def main() -> int:
         gw.stop()
         return 1
 
-    # Chronological window: [calibration preamble | operational].
-    window = gw.get_matrix().get_latest(total)          # (3, 64, total)
+    window = gw.get_matrix().get_latest(total)
     calib_slice = window[:, :, : args.calib]
     op_slice = window[:, :, args.calib:]
 
@@ -107,16 +107,11 @@ def main() -> int:
     extractor = FeatureExtractorV2()
     feats = extractor.extract(cleaned)
 
-    # --- report ---
     raw_amp = float(np.mean(np.abs(op_slice)))
-    dyn_amp = float(np.mean(np.abs(cleaned.dynamic)))                 # post-subtraction, pre-bandpass
-    motion_std = float(np.std(cleaned.amplitude))                     # bandpassed motion energy
+    dyn_amp = float(np.mean(np.abs(cleaned.dynamic)))
+    motion_std = float(np.std(cleaned.amplitude))
 
-    # Phase-coherence diagnostic measured on the RAW operational frames of RX1
-    # (gain == 1, so op_slice[0] is the untouched dataset CSI). If the complex
-    # mean is much smaller than the mean amplitude, packet phase is drifting and
-    # complex static subtraction cannot form a clean baseline.
-    rx0 = op_slice[0]                                    # (64, T) complex, raw
+    rx0 = op_slice[0]
     meanabs = np.mean(np.abs(rx0), axis=1)
     absmean = np.abs(np.mean(rx0, axis=1))
     active = meanabs > 1e-6

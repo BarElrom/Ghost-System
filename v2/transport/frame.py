@@ -1,49 +1,29 @@
-"""
-v2 transport — wire frame codec.
 
-Defines the binary UDP payload the injector sends to each ESP32 receiver.
-The frame carries complex CSI as interleaved int16 I/Q (int16, not int8 — see
-Plan section 16: int8 is too lossy for phase/breathing).
-
-Wire layout (big-endian / network order):
-
-    Offset  Size  Field       Notes
-    ------  ----  ----------  -------------------------------------------
-    0       2     magic       b"G2"
-    2       1     version     currently 1
-    3       1     node_id     1=RX1, 2=RX2, 3=RX3
-    4       1     flags       bit0 = calibration frame
-    5       1     reserved    0
-    6       4     frame_seq   uint32, per-node monotonic sequence
-    10      2     num_sub     uint16, subcarriers in payload (64)
-    12      ...   iq          num_sub * 2 * int16, interleaved I0,Q0,I1,Q1,...
-
-Total size = 12 + num_sub * 4 bytes (268 bytes for 64 subcarriers), well
-within a single UDP datagram / Wi-Fi MTU.
-
-This module depends only on numpy + struct so it can be shared by the injector,
-the software mock, and (as a reference) the firmware format.
-"""
 
 import struct
 from dataclasses import dataclass
 
 import numpy as np
 
-# --- constants ---
+from v2.config_v2 import (
+    DEFAULT_NOISE_FLOOR,
+    DEFAULT_RSSI,
+    SAMPLE_RATE_HZ,
+    TX_MAC,
+    WIFI_CHANNEL,
+)
+
 MAGIC = b"G2"
 VERSION = 1
 
-# magic(2s) version(B) node_id(B) flags(B) reserved(B) frame_seq(I) num_sub(H)
 HEADER_FMT = ">2sBBBBIH"
-HEADER_SIZE = struct.calcsize(HEADER_FMT)  # 12
+HEADER_SIZE = struct.calcsize(HEADER_FMT)
 
 FLAG_CALIBRATION = 0x01
 
 INT16_MIN = -32768
 INT16_MAX = 32767
 
-# Big-endian int16 dtype used for the I/Q payload (endianness-independent).
 _IQ_DTYPE = np.dtype(">i2")
 
 
@@ -53,7 +33,7 @@ class Frame:
 
     node_id: int
     frame_seq: int
-    iq: np.ndarray            # complex64, shape (num_sub,)
+    iq: np.ndarray
     calibration: bool = False
 
     @property
@@ -94,7 +74,7 @@ def encode_frame(
         VERSION,
         node_id & 0xFF,
         flags,
-        0,                      # reserved
+        0,
         frame_seq & 0xFFFFFFFF,
         num_sub,
     )
@@ -129,7 +109,7 @@ def decode_frame(data: bytes) -> Frame:
     if version != VERSION:
         raise ValueError(f"unsupported version {version} (expected {VERSION})")
 
-    expected = HEADER_SIZE + num_sub * 2 * 2  # 2 int16 per subcarrier
+    expected = HEADER_SIZE + num_sub * 2 * 2
     if len(data) < expected:
         raise ValueError(
             f"payload too short: {len(data)} < {expected} "
@@ -152,3 +132,50 @@ def decode_frame(data: bytes) -> Frame:
 def frame_size(num_sub: int) -> int:
     """Total wire size in bytes for a frame with the given subcarrier count."""
     return HEADER_SIZE + num_sub * 4
+
+
+_US_PER_FRAME = 1_000_000 // SAMPLE_RATE_HZ
+
+
+def frame_to_csi_line(frame: Frame) -> str:
+    """Format a decoded Frame as a standard ESP32 CSI_DATA CSV line.
+
+    This is the inverse of ``CSIParser.parse`` — the exact line a real ESP32
+    would emit for this frame — so both the software mock and the binary-serial
+    hardware source can present decoded frames to the gateway unchanged.
+
+    Column layout (indices 0-24) matches esp-csi `csi_recv` output:
+        type,id,mac,rssi,rate,sig_mode,mcs,bandwidth,smoothing,not_sounding,
+        aggregation,stbc,fec_coding,sgi,noise_floor,ampdu_cnt,channel,
+        secondary_channel,local_timestamp,ant,sig_len,rx_format,len,first_word,
+        "[I0,Q0,...,I63,Q63]"
+    """
+    i = np.clip(np.rint(frame.iq.real), -32768, 32767).astype(np.int16)
+    q = np.clip(np.rint(frame.iq.imag), -32768, 32767).astype(np.int16)
+
+    interleaved = np.empty(frame.num_sub * 2, dtype=np.int16)
+    interleaved[0::2] = i
+    interleaved[1::2] = q
+    csi_array = "[" + ",".join(str(int(v)) for v in interleaved) + "]"
+
+    n_vals = frame.num_sub * 2
+    timestamp = frame.frame_seq * _US_PER_FRAME
+
+    fields = [
+        "CSI_DATA",
+        str(frame.frame_seq),
+        TX_MAC,
+        str(DEFAULT_RSSI),
+        "11", "1", "7", "1", "0", "1", "0", "0", "0", "0",
+        str(DEFAULT_NOISE_FLOOR),
+        "0",
+        str(WIFI_CHANNEL),
+        "0",
+        str(timestamp),
+        "0",
+        str(n_vals),
+        "1",
+        str(n_vals),
+        "0",
+    ]
+    return ",".join(fields) + ',"' + csi_array + '"'

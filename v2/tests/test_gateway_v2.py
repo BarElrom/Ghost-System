@@ -10,18 +10,36 @@ Run:  python v2/tests/test_gateway_v2.py
 import sys
 import time
 
-from _harness import Harness  # noqa: E402  (path bootstrap happens in _harness)
+from _harness import Harness
 
 import numpy as np
 
-from v2.ghost.gateway_v2 import ComplexMatrix, CSIParser, GatewayV2
+from v2.ghost.gateway_v2 import BinarySerialSource, ComplexMatrix, CSIParser, GatewayV2
 from v2.ghost.sources import ListSource, UDPSource
-from v2.transport.frame import Frame
+from v2.transport.frame import Frame, encode_frame
 from v2.transport.udp_sender import UDPSender
 from v2.transport.mock_esp32 import frame_to_csi_line
 
 
-# --- helpers ---------------------------------------------------------------
+class _FakeSerial:
+    """Minimal pyserial stand-in: serves a fixed byte blob across read() calls."""
+
+    def __init__(self, data: bytes):
+        self._data = bytearray(data)
+
+    @property
+    def in_waiting(self) -> int:
+        return len(self._data)
+
+    def read(self, n: int) -> bytes:
+        chunk = bytes(self._data[:n])
+        del self._data[:n]
+        return chunk
+
+    def close(self) -> None:
+        pass
+
+
 def _line_for(rx: int, seq: int, iq: np.ndarray) -> tuple[int, str]:
     """Build a (receiver_index, CSI_DATA line) item from complex iq."""
     frame = Frame(node_id=rx + 1, frame_seq=seq, iq=iq.astype(np.complex64))
@@ -41,7 +59,6 @@ def _wait_until(cond, timeout: float = 3.0, interval: float = 0.02) -> bool:
     return cond()
 
 
-# --- ComplexMatrix ---------------------------------------------------------
 def test_matrix_basic(h: Harness) -> None:
     m = ComplexMatrix(max_time=100)
     for k in range(3):
@@ -50,10 +67,8 @@ def test_matrix_basic(h: Harness) -> None:
     latest = m.get_latest(3)
     h.expect("shape (3,64,3)", latest.shape == (3, 64, 3), str(latest.shape))
     h.expect("dtype complex64", latest.dtype == np.complex64)
-    # oldest -> newest at subcarrier 0
     h.expect("real ordering 0,1,2", np.allclose(latest[0, 0, :].real, [0, 1, 2]))
     h.expect("imag ordering 0,2,4", np.allclose(latest[0, 0, :].imag, [0, 2, 4]))
-    # untouched receivers stay zero
     h.expect("rx1 empty -> zeros", np.all(latest[1] == 0))
 
 
@@ -68,14 +83,31 @@ def test_matrix_zero_fill(h: Harness) -> None:
 
 def test_matrix_wraparound(h: Harness) -> None:
     m = ComplexMatrix(max_time=4)
-    for k in range(6):  # overwrite the ring
+    for k in range(6):
         m.append(0, _const_iq(k, k))
     latest = m.get_latest(4)
     h.expect("count keeps growing", m.get_receiver_count(0) == 6)
     h.expect("last 4 in order 2,3,4,5", np.allclose(latest[0, 0, :].real, [2, 3, 4, 5]))
 
 
-# --- CSIParser (complex) ---------------------------------------------------
+def test_matrix_timestamps(h: Harness) -> None:
+    # Note 1: each slot carries device_ts, host_ts and seq alongside the CSI.
+    m = ComplexMatrix(max_time=10)
+    for k in range(3):
+        m.append(0, _const_iq(k, k), device_ts=k * 100, host_ts=k * 1000, seq_id=k)
+    streams = m.get_streams(3)
+    h.expect("stream is per-receiver", len(streams) == 3)
+    s0 = streams[0]
+    h.expect("device_ts preserved in order", s0["device_ts"].tolist() == [0, 100, 200])
+    h.expect("host_ts preserved in order", s0["host_ts"].tolist() == [0, 1000, 2000])
+    h.expect("seq preserved in order", s0["seq"].tolist() == [0, 1, 2])
+    h.expect("csi shape [64,3]", s0["csi"].shape == (64, 3), str(s0["csi"].shape))
+    h.expect("empty receiver → 0-length stream", streams[1]["csi"].shape == (64, 0))
+    h.expect("append still defaults timestamps to 0", True)  # back-compat: no-arg append below
+    m.append(1, _const_iq(9, 9))  # legacy 2-arg call must not raise
+    h.expect("legacy 2-arg append works", m.get_receiver_count(1) == 1)
+
+
 def test_parser_complex(h: Harness) -> None:
     i = np.arange(64, dtype=np.float32) - 10.0
     q = (np.arange(64, dtype=np.float32) * 2.0) - 30.0
@@ -100,7 +132,6 @@ def test_parser_rejects(h: Harness) -> None:
     h.expect("short array -> None", p.parse('CSI_DATA,1,mac,-40,0,0,0,0,0,0,0,0,0,0,-95,0,6,0,123,0,4,1,4,0,"[1,2,3,4]"', 0) is None)
 
 
-# --- End-to-end: ListSource ------------------------------------------------
 def test_end_to_end_list_source(h: Harness) -> None:
     items = [
         _line_for(0, 0, _const_iq(1, 10)),
@@ -127,13 +158,71 @@ def test_end_to_end_list_source(h: Harness) -> None:
     gw.stop()
 
 
-# --- End-to-end: UDPSource (full injector -> ghost chain in software) -------
+def test_binary_serial_source(h: Harness) -> None:
+    # Note 3: BinarySerialSource reads G2 frames and presents them as CSI lines.
+    i = np.arange(64, dtype=np.float32) - 5.0
+    q = (np.arange(64, dtype=np.float32) * 3.0) - 10.0
+    iq = (i + 1j * q).astype(np.complex64)
+    data = encode_frame(node_id=1, frame_seq=42, iq=iq)
+
+    src = BinarySerialSource(port="fake", receiver_index=2)
+    src._serial = _FakeSerial(data)  # bypass _open_once (no real port)
+    item = src.poll(0.5)
+    h.expect("returns a (rx, line) item", item is not None)
+    if item is None:
+        return
+    rx, line = item
+    h.expect("routed by receiver_index, not frame node_id", rx == 2)
+    pkt = CSIParser().parse(line, receiver_index=rx)
+    h.expect("decodes to correct seq", pkt is not None and pkt.seq_id == 42)
+    if pkt is None:
+        return
+    h.expect("I preserved through binary path", np.allclose(pkt.csi.real, i))
+    h.expect("Q preserved through binary path", np.allclose(pkt.csi.imag, q))
+
+
+def test_binary_serial_resync(h: Harness) -> None:
+    # A text banner + junk precede the first frame; the source must resync on "G2".
+    banner = b"csi_inject_serial ready\n\x00\x01junk"
+    data = banner + encode_frame(node_id=1, frame_seq=5, iq=_const_iq(7, -7))
+    src = BinarySerialSource("fake", 0)
+    src._serial = _FakeSerial(data)
+    item = src.poll(0.5)
+    h.expect("skips banner+junk to the first frame", item is not None)
+    if item is None:
+        return
+    pkt = CSIParser().parse(item[1], 0)
+    h.expect("resync decodes seq 5", pkt is not None and pkt.seq_id == 5)
+
+
+def test_binary_serial_bad_frame_recovers(h: Harness) -> None:
+    # A frame with a bad version byte must be dropped, then the next one decoded.
+    good = encode_frame(node_id=1, frame_seq=9, iq=_const_iq(1, 1))
+    bad = bytearray(encode_frame(node_id=1, frame_seq=0, iq=_const_iq(0, 0)))
+    bad[2] = 2  # version 2 -> decode_frame raises ValueError
+    src = BinarySerialSource("fake", 1)
+    src._serial = _FakeSerial(bytes(bad) + good)
+    first = src.poll(0.5)
+    h.expect("malformed frame yields None", first is None)
+    second = src.poll(0.5)
+    h.expect("recovers the next good frame", second is not None)
+    if second is None:
+        return
+    pkt = CSIParser().parse(second[1], 1)
+    h.expect("recovered seq 9 after bad frame", pkt is not None and pkt.seq_id == 9)
+
+
+def test_binary_serial_timeout(h: Harness) -> None:
+    src = BinarySerialSource("fake", 0)
+    src._serial = _FakeSerial(b"")
+    h.expect("no data returns None within timeout", src.poll(0.1) is None)
+
+
 def test_end_to_end_udp_source(h: Harness) -> None:
     udp = UDPSource(bind_host="127.0.0.1", bind_port=0)
     gw = GatewayV2(sources=[udp])
     gw.start()
     try:
-        # RX2 -> node_id 2 -> receiver_index 1. Phase = +pi/2 (I=0, Q=100).
         sender = UDPSender(net_map={"RX2": ("127.0.0.1", udp.port)})
         n_frames = 5
         for seq in range(n_frames):
@@ -147,10 +236,8 @@ def test_end_to_end_udp_source(h: Harness) -> None:
         latest = gw.get_matrix().get_latest(n_frames)
         h.expect("real part is 0", np.allclose(latest[1, :, :].real, 0.0))
         h.expect("imag part preserved as 100", np.allclose(latest[1, :, :].imag, 100.0))
-        # phase preserved end to end — the whole point of full-complex v2
         phase = np.angle(latest[1, 0, 0])
         h.expect("phase preserved = +pi/2", np.isclose(phase, np.pi / 2, atol=1e-4), str(phase))
-        # frames landed on RX2 (index 1), not other receivers
         h.expect("only rx1 received", gw.get_matrix().get_receiver_count(0) == 0)
     finally:
         gw.stop()
@@ -159,10 +246,15 @@ def test_end_to_end_udp_source(h: Harness) -> None:
 def main() -> int:
     h = Harness("gateway_v2 (complex I/Q)")
     h.case("matrix_basic", test_matrix_basic)
+    h.case("matrix_timestamps", test_matrix_timestamps)
     h.case("matrix_zero_fill", test_matrix_zero_fill)
     h.case("matrix_wraparound", test_matrix_wraparound)
     h.case("parser_complex", test_parser_complex)
     h.case("parser_rejects", test_parser_rejects)
+    h.case("binary_serial_source", test_binary_serial_source)
+    h.case("binary_serial_resync", test_binary_serial_resync)
+    h.case("binary_serial_bad_frame_recovers", test_binary_serial_bad_frame_recovers)
+    h.case("binary_serial_timeout", test_binary_serial_timeout)
     h.case("end_to_end_list_source", test_end_to_end_list_source)
     h.case("end_to_end_udp_source", test_end_to_end_udp_source)
     return h.done()

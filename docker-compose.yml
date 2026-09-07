@@ -1,16 +1,17 @@
-services:
-  chromadb:
-    image: chromadb/chroma:latest
-    container_name: ghost-chromadb
-    ports:
-      - "8000:8000"
-    volumes:
-      - ghost_chroma_data:/chroma/chroma
-    environment:
-      - IS_PERSISTENT=TRUE
-      - ANONYMIZED_TELEMETRY=FALSE
-    restart: unless-stopped
+# GHOST System v2 — self-contained stack.
+#
+#   docker compose up -d ollama chromadb   # just the AI/memory services
+#   docker compose run --rm ghost          # default: software pipeline demo
+#   docker compose run --rm ghost python v2/run_datasets_compare.py
+#   docker compose run --rm ghost sh -c 'for t in v2/tests/test_*.py; do python "$t"; done'
+#   docker compose run --rm ghost python v2/ghost/main_v2.py --replay v2/example_csi.csv \
+#       --pos-scale embedded_wifi --llm      # AI layer, routed to the ollama service
+#
+# Note: hardware serial/Wi-Fi run modes need USB/board access and must run on the
+# host (not in these containers).
 
+services:
+  # --- Cognitive AI layer (the --llm path) --------------------------------
   ollama:
     image: ollama/ollama:latest
     container_name: ghost-ollama
@@ -28,6 +29,37 @@ services:
     #           count: all
     #           capabilities: [gpu]
 
+  # --- Memory bank (spatial fingerprints) ---------------------------------
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: ghost-chromadb
+    ports:
+      - "8000:8000"
+    volumes:
+      - ghost_chroma_data:/chroma/chroma
+    environment:
+      - IS_PERSISTENT=TRUE
+      - ANONYMIZED_TELEMETRY=FALSE
+    restart: unless-stopped
+
+  # --- The GHOST v2 pipeline (software-only run modes) --------------------
+  ghost:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghost-v2:latest
+    container_name: ghost-v2
+    depends_on:
+      - ollama
+      - chromadb
+    environment:
+      - GHOST_OLLAMA_HOST=ollama
+      - GHOST_OLLAMA_MODEL=llama3.2:3b
+      - GHOST_CHROMA_HOST=chromadb
+    # Persist generated plots/CSVs back to the host for inspection.
+    volumes:
+      - ./_out:/app/v2/_out
+
 volumes:
-  ghost_chroma_data:
   ghost_ollama_data:
+  ghost_chroma_data:

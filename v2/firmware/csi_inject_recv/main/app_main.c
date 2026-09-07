@@ -105,7 +105,7 @@ static void emit_csi_line(uint32_t seq, const int16_t *iq, int n_vals)
 
     /* 24 metadata fields (indices 0-23), then the quoted CSI array.
      * Fillers match mock_esp32.frame_to_csi_line(); faithful: id, timestamp, I/Q. */
-    printf("CSI_DATA,%u," MACSTR ",%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%lld,%d,%d,%d,%d,%d",
+    printf("CSI_DATA,%u," MACSTR ",%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%lld,%d,%d,%d,%d,%d",
            (unsigned)seq, MAC2STR(TX_MAC),
            -45,   /* rssi */
            11,    /* rate */

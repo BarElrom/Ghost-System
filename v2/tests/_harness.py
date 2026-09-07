@@ -9,8 +9,6 @@ import os
 import sys
 import traceback
 
-# Put the repository root on sys.path so tests can `import v2...` and the
-# existing root modules (e.g. `gateway`) regardless of how they are launched.
 _REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
@@ -38,7 +36,7 @@ class Harness:
         except exc_type:
             self.passed += 1
             print(f"  PASS  {name}")
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             self.failed += 1
             print(f"  FAIL  {name}  [wrong exception {type(e).__name__}: {e}]")
         else:
@@ -48,7 +46,7 @@ class Harness:
     def case(self, name: str, fn) -> None:
         try:
             fn(self)
-        except Exception as e:  # noqa: BLE001
+        except Exception as e:
             self.failed += 1
             print(f"  FAIL  {name}  [uncaught {type(e).__name__}: {e}]")
             traceback.print_exc()
