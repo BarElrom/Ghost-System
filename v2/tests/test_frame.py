@@ -5,7 +5,7 @@ Run:  python v2/tests/test_frame.py
 
 import sys
 
-from _harness import Harness  # noqa: E402  (path bootstrap happens in _harness)
+from _harness import Harness
 
 import numpy as np
 

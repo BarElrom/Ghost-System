@@ -53,14 +53,11 @@ class UDPSource(PacketSource):
 
     def __init__(self, bind_host: str = "0.0.0.0", bind_port: int = UDP_PORT):
         self._sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        # Enlarge the receive buffer so a fast injection burst is not dropped
-        # before the single consumer thread drains it (best-effort).
         try:
             self._sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 8 * 1024 * 1024)
         except OSError:
             pass
         self._sock.bind((bind_host, bind_port))
-        # node name (RX1..) -> receiver_index (0..)
         self._node_to_rx = {
             name: idx for idx, name in enumerate(sorted(NODE_IDS, key=NODE_IDS.get))
         }

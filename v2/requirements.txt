@@ -1,0 +1,25 @@
+# GHOST System v2 — Python dependencies (self-contained under v2/)
+#
+# Install:  pip install -r v2/requirements.txt
+# These cover every v2 run mode: tests, software demos, hardware serial/Wi-Fi,
+# and the cognitive pipeline. The AI layer (--llm) also needs the Ollama service
+# (see v2/docker-compose.yml); the `ollama` client below is only the wire.
+
+# Signal processing / DSP
+numpy
+scipy
+
+# Dataset adapters and tabular I/O
+pandas
+
+# Hardware transport (USB serial to the ESP32 boards)
+pyserial
+
+# Localizer track smoothing (constant-velocity Kalman)
+filterpy
+
+# Plots (run_datasets_compare, viz_decisions, --plot)
+matplotlib
+
+# Cognitive AI layer (--llm) — talks to the Ollama service
+ollama

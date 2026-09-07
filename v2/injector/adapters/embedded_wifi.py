@@ -1,20 +1,3 @@
-"""
-Embedded WiFi Sensing adapter (ESP32 CSI CSV).
-
-Source: https://github.com/AlbanyArmenta0711/Embedded_WiFi_Sensing
-This dataset was captured with a web-based ESP32 CSI collection tool, so each
-line is an ESP32-style record ending in a bracketed CSI array, e.g.
-
-    ...,<local_timestamp>,...,"[i0,q0,i1,q1,...]"
-
-The adapter reads the bracketed array from each line, forms complex I/Q, and
-normalizes to NUM_SUBCARRIERS. It is single-link (num_streams = 1).
-
-NOTE (verify against real files): the ESP32 raw CSI buffer is documented as
-(imaginary, real) pairs on some toolchains and (real, imaginary) on others.
-`iq_order` selects this. It only affects the phase sign (a conjugate), not
-amplitude. Confirm against a known sample before trusting phase-based features.
-"""
 
 import logging
 
@@ -62,7 +45,7 @@ class EmbeddedWiFiAdapter(DatasetAdapter):
         bs = line.find("[")
         be = line.rfind("]")
         if bs == -1 or be == -1 or be <= bs:
-            return None  # header / non-CSI line
+            return None
         inner = line[bs + 1:be].strip()
         if not inner:
             return None
@@ -79,7 +62,7 @@ class EmbeddedWiFiAdapter(DatasetAdapter):
         b = vals[1::2]
         if self.iq_order == "iq":
             i_vals, q_vals = a, b
-        else:  # "qi" — imaginary first
+        else:
             i_vals, q_vals = b, a
         iq = (i_vals + 1j * q_vals).astype(np.complex64)
         return normalize_subcarriers(iq, NUM_SUBCARRIERS)
